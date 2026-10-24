@@ -39,7 +39,6 @@ const DrawHud = dynamic(() => import('@/components/DrawHud'), { ssr: false });
 // not the toolbar has loaded yet.
 import { toShape, queryRing, type DrawMode, type DrawnShape, type DrawProgress, type DrawResult } from '@/lib/draw';
 import { selectInPolygon } from '@/lib/aoi';
-import { pickLandingCity } from '@/lib/landing-cities';
 import { searchPlaces } from '@/lib/geosearch';
 import { diffSweep, appendEvents, type WatchBaseline, type WatchEvent } from '@/lib/watch';
 import { STORAGE_KEY, serializeShapes, deserializeShapes, shapesToGeoJSON, downloadFile } from '@/lib/aoi-export';
@@ -179,7 +178,7 @@ export default function Dashboard() {
   const data = dataRef.current;
 
   const [backendStatus, setBackendStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
-  const [mapView, setMapView] = useState({ zoom: 2.5, latitude: 20 });
+  const [mapView, setMapView] = useState({ zoom: 4.2, latitude: 20.5937 });
   const [flyToLocation, setFlyToLocation] = useState<{ lat: number; lng: number; zoom?: number; alertId?: string; duration?: number; ts: number } | null>(null);
   /* The Live Alerts the feed's filters leave showing; the map pins those. */
   const [pinnedAlertIds, setPinnedAlertIds] = useState<string[] | null>(null);
@@ -194,12 +193,6 @@ export default function Dashboard() {
   const [mapReady, setMapReady] = useState(false);
 
   const revealed = !showSplash;
-  /* True once the splash has finished fading out, not merely started to. */
-  const [splashGone, setSplashGone] = useState(false);
-  /* Where the viewer is, by IP. Asked for at once; the camera flies there
-     once the splash has gone. */
-  const [homeLocation, setHomeLocation] = useState<{ lat: number; lng: number } | null>(null);
-  const autoLocateCancelled = useRef(false);
 
   const [activeCamera, setActiveCamera] = useState<any>(null);
   const [spaceWeather, setSpaceWeather] = useState<any>(null);
@@ -418,21 +411,17 @@ export default function Dashboard() {
       document.documentElement.removeAttribute('data-oi-theater');
     };
   }, [oiTheaterOn, oiHasRun]);
-  // A shared link (?oi=<run>) opens the panel on that run, and the camera
-  // goes to the run rather than to the visitor's city.
+  // A shared link (?oi=<run>) opens the panel on that run.
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get('oi');
     if (!id) return;
-    autoLocateCancelled.current = true;
     setOiMode('forecast');
     if (window.matchMedia('(max-width: 767px)').matches) setMobilePanel('oi');
     else setShowOi(true);
     void oi.watch(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  // Once a run is under way the camera is the director's (lib/oi/camera): a late answer about the
-  // visitor's city must not fly it away.
-  useEffect(() => { if (oi.runId) autoLocateCancelled.current = true; }, [oi.runId]);
+  // Once a run is under way the camera is the director's (lib/oi/camera).
   const [mapProjection, setMapProjection] = useState<'globe'|'mercator'>('globe');
   const [terrainFocus, setTerrainFocus] = useState(0);
   const [terrainStatus, setTerrainStatus] = useState<TerrainStatus>('idle');
@@ -673,16 +662,7 @@ export default function Dashboard() {
     return () => clearTimeout(t);
   }, [splashStage]);
 
-  /* Fly from the globe down to the viewer's city once the splash has gone.
-     Starting as it began to fade meant a busy first load (the satellite
-     catalogue is ~19k objects) could hold the fade until the camera was
-     nearly at street level, and the globe was never seen. */
-  useEffect(() => {
-    if (!splashGone || !homeLocation || autoLocateCancelled.current) return;
-    setFlyToLocation({ ...homeLocation, zoom: 8, duration: 3500, ts: Date.now() });
-  }, [splashGone, homeLocation]);
-
-  // On mount: restore layers, probe optional feeds, and geolocate by IP
+  // On mount: restore layers and probe optional feeds.
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
@@ -709,48 +689,9 @@ export default function Dashboard() {
       .then(p => { if (p) setCapabilities(c => ({ ...c, cloudflare: !!p.configured })); })
       .catch(() => { /* leave the layer hidden */ });
 
-    // Once the user interacts, a late IP-location response must not steal the
-    // camera back. The request is also cancelled when this page unmounts.
-    const geoController = new AbortController();
-    const cancelAutoLocate = () => { autoLocateCancelled.current = true; };
-    window.addEventListener('pointerdown', cancelAutoLocate, { once: true });
-    window.addEventListener('keydown', cancelAutoLocate, { once: true });
-    /* Asked for at once rather than after a fixed 3 s wait, so the answer is
-       in hand when the splash lifts; the effect above does the flying. When
-       the visitor's city can't be found (no public address, every provider
-       failed, or no answer within 6 s) the fly-in still happens, to a random
-       well-covered city, rather than stopping on the globe. */
-    let located = false;
-    const landSomewhere = () => {
-      if (located || geoController.signal.aborted) return;
-      located = true;
-      const city = pickLandingCity();
-      setHomeLocation({ lat: city.lat, lng: city.lng });
-    };
-    const geoGiveUp = setTimeout(landSomewhere, 6000);
-    fetch('/api/geo', { signal: geoController.signal })
-      .then(r => r.json())
-      .then(geo => {
-        if (located || geoController.signal.aborted) return;
-        if (geo.status === 'success' &&
-            Number.isFinite(geo.lat) && Number.isFinite(geo.lon) && Math.abs(geo.lat) <= 90 && Math.abs(geo.lon) <= 180) {
-          located = true;
-          setHomeLocation({ lat: geo.lat, lng: geo.lon });
-        } else {
-          landSomewhere();
-        }
-      })
-      .catch(landSomewhere);
-
-    return () => {
-      clearTimeout(geoGiveUp);
-      geoController.abort();
-      window.removeEventListener('pointerdown', cancelAutoLocate);
-      window.removeEventListener('keydown', cancelAutoLocate);
-    };
   }, []);
 
-  // URL state: persist active layers only (lat/lon comes from IP geolocation on each load)
+  // URL state: persist active layers; the initial camera opens on India.
   const urlTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1364,7 +1305,7 @@ export default function Dashboard() {
     <main className="fixed inset-0 w-full h-full bg-[var(--bg-void)] overflow-hidden">
 
       {/* ── SPLASH ── */}
-      <AnimatePresence onExitComplete={() => setSplashGone(true)}>
+      <AnimatePresence>
         {showSplash && (
           <motion.div
             initial={{ opacity: 1 }}
@@ -1755,6 +1696,10 @@ export default function Dashboard() {
             <h1 className="text-lg md:text-xl font-bold tracking-[0.4em] text-[#D4AF37] font-mono">OSIRIS</h1>
             <span className="text-[9px] md:text-[10px] font-mono tracking-[0.2em] opacity-80 uppercase text-[#D4AF37]">OPEN SOURCE INTELLIGENCE</span>
           </div>
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-black/35 px-2 py-1 text-[9px] font-mono tracking-[0.16em] text-white/75 backdrop-blur-sm" aria-label="Map centered on India">
+            <span className="flex h-2.5 w-2.5 flex-col overflow-hidden rounded-[2px]" aria-hidden="true"><span className="h-1/3 bg-[#FF9933]" /><span className="h-1/3 bg-white" /><span className="h-1/3 bg-[#138808]" /></span>
+            INDIA VIEW
+          </span>
         </div>
         <div className="flex items-center gap-3 mt-1.5 pl-[44px] min-w-0 pr-4">
           <span className="text-[9px] md:text-[9px] text-[var(--text-muted)] font-mono tracking-[0.2em] md:tracking-[0.3em] uppercase opacity-40 truncate">
